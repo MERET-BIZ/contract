@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.5;
+pragma solidity 0.8.18;
 
 abstract contract Context {
     function _msgSender() internal view virtual returns (address) {
@@ -13,9 +13,56 @@ abstract contract Context {
     }
 }
 
+/**
+ * @dev Standard ERC-20 Errors
+ * Interface of the https://eips.ethereum.org/EIPS/eip-6093[ERC-6093] custom errors for ERC-20 tokens.
+ */
+interface IERC20Errors {
+    /**
+     * @dev Indicates an error related to the current `balance` of a `sender`. Used in transfers.
+     * @param sender Address whose tokens are being transferred.
+     * @param balance Current balance for the interacting account.
+     * @param needed Minimum amount required to perform a transfer.
+     */
+    error ERC20InsufficientBalance(address sender, uint256 balance, uint256 needed);
+
+    /**
+     * @dev Indicates a failure with the token `sender`. Used in transfers.
+     * @param sender Address whose tokens are being transferred.
+     */
+    error ERC20InvalidSender(address sender);
+
+    /**
+     * @dev Indicates a failure with the token `receiver`. Used in transfers.
+     * @param receiver Address to which tokens are being transferred.
+     */
+    error ERC20InvalidReceiver(address receiver);
+
+    /**
+     * @dev Indicates a failure with the `spender`’s `allowance`. Used in transfers.
+     * @param spender Address that may be allowed to operate on tokens without being their owner.
+     * @param allowance Amount of tokens a `spender` is allowed to operate with.
+     * @param needed Minimum amount required to perform a transfer.
+     */
+    error ERC20InsufficientAllowance(address spender, uint256 allowance, uint256 needed);
+
+    /**
+     * @dev Indicates a failure with the `approver` of a token to be approved. Used in approvals.
+     * @param approver Address initiating an approval operation.
+     */
+    error ERC20InvalidApprover(address approver);
+
+    /**
+     * @dev Indicates a failure with the `spender` to be approved. Used in approvals.
+     * @param spender Address that may be allowed to operate on tokens without being their owner.
+     */
+    error ERC20InvalidSpender(address spender);
+}
+
 abstract contract Ownable is Context {
     address private _owner;
-
+    address public pendingOwner;
+    
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
     constructor() {
@@ -33,15 +80,23 @@ abstract contract Ownable is Context {
         _;
     }
 
-    function renounceOwnership() public virtual onlyOwner {
-        emit OwnershipTransferred(_owner, address(0));
+    function renounceOwnership() public onlyOwner {
         _owner = address(0);
+        pendingOwner = address(0);
+        emit OwnershipTransferred(_owner, address(0));
     }
 
-    function transferOwnership(address newOwner) public virtual onlyOwner {
-        require(newOwner != address(0), "Ownable: new owner is the zero address");
-        emit OwnershipTransferred(_owner, newOwner);
-        _owner = newOwner;
+    function transferOwnership(address newOwner) public onlyOwner {
+        require(address(0) != newOwner, "pendingOwner set to the zero address.");
+        pendingOwner = newOwner;
+    }
+
+    function claimOwnership() public {
+        require(msg.sender == pendingOwner, "caller != pending owner");
+
+        _owner = pendingOwner;
+        pendingOwner = address(0);
+        emit OwnershipTransferred(_owner, pendingOwner);
     }
 }
 
@@ -63,10 +118,10 @@ interface IERC20Metadata is IERC20 {
     function decimals() external view returns (uint8);
 }
 
-contract ERC20 is Context, IERC20, IERC20Metadata {
-    mapping(address => uint256) internal _balances;
+abstract contract ERC20 is Context, IERC20, IERC20Metadata, IERC20Errors {
+    mapping(address account => uint256) internal _balances;
 
-    mapping(address => mapping(address => uint256)) private _allowances;
+    mapping(address account => mapping(address spender => uint256)) private _allowances;
 
     uint256 private _totalSupply;
 
@@ -78,133 +133,131 @@ contract ERC20 is Context, IERC20, IERC20Metadata {
         _symbol = symbol_;
     }
 
-    function name() public view virtual override returns (string memory) {
+    function name() public view virtual returns (string memory) {
         return _name;
     }
 
-    function symbol() public view virtual override returns (string memory) {
+    function symbol() public view virtual returns (string memory) {
         return _symbol;
     }
 
-    function decimals() public view virtual override returns (uint8) {
+    function decimals() public view virtual returns (uint8) {
         return 18;
     }
 
-    function totalSupply() public view virtual override returns (uint256) {
+    function totalSupply() public view virtual returns (uint256) {
         return _totalSupply;
     }
 
-    function balanceOf(address account) public view virtual override returns (uint256) {
+    function balanceOf(address account) public view virtual returns (uint256) {
         return _balances[account];
     }
 
-    function transfer(address recipient, uint256 amount) public virtual override returns (bool) {
-        _transfer(_msgSender(), recipient, amount);
+    function transfer(address to, uint256 value) public virtual returns (bool) {
+        address owner = _msgSender();
+        _transfer(owner, to, value);
         return true;
     }
 
-    function allowance(address owner, address spender) public view virtual override returns (uint256) {
+    function allowance(address owner, address spender) public view virtual returns (uint256) {
         return _allowances[owner][spender];
     }
 
-    function approve(address spender, uint256 amount) public virtual override returns (bool) {
-        _approve(_msgSender(), spender, amount);
+    function approve(address spender, uint256 value) public virtual returns (bool) {
+        address owner = _msgSender();
+        _approve(owner, spender, value);
         return true;
     }
 
-    function transferFrom(
-        address sender,
-        address recipient,
-        uint256 amount
-    ) public virtual override returns (bool) {
-        _transfer(sender, recipient, amount);
-
-        uint256 currentAllowance = _allowances[sender][_msgSender()];
-        require(currentAllowance >= amount, "ERC20: transfer amount exceeds allowance");
-    unchecked {
-        _approve(sender, _msgSender(), currentAllowance - amount);
-    }
-
+    function transferFrom(address from, address to, uint256 value) public virtual returns (bool) {
+        address spender = _msgSender();
+        _spendAllowance(from, spender, value);
+        _transfer(from, to, value);
         return true;
     }
 
-    function increaseAllowance(address spender, uint256 addedValue) public virtual returns (bool) {
-        _approve(_msgSender(), spender, _allowances[_msgSender()][spender] + addedValue);
-        return true;
+    function _transfer(address from, address to, uint256 value) internal {
+        if (from == address(0)) {
+            revert ERC20InvalidSender(address(0));
+        }
+        if (to == address(0)) {
+            revert ERC20InvalidReceiver(address(0));
+        }
+        _update(from, to, value);
     }
 
-    function decreaseAllowance(address spender, uint256 subtractedValue) public virtual returns (bool) {
-        uint256 currentAllowance = _allowances[_msgSender()][spender];
-        require(currentAllowance >= subtractedValue, "ERC20: decreased allowance below zero");
-    unchecked {
-        _approve(_msgSender(), spender, currentAllowance - subtractedValue);
+    function _update(address from, address to, uint256 value) internal virtual {
+        if (from == address(0)) {
+            // Overflow check required: The rest of the code assumes that totalSupply never overflows
+            _totalSupply += value;
+        } else {
+            uint256 fromBalance = _balances[from];
+            if (fromBalance < value) {
+                revert ERC20InsufficientBalance(from, fromBalance, value);
+            }
+            unchecked {
+                // Overflow not possible: value <= fromBalance <= totalSupply.
+                _balances[from] = fromBalance - value;
+            }
+        }
+
+        if (to == address(0)) {
+            unchecked {
+                // Overflow not possible: value <= totalSupply or value <= fromBalance <= totalSupply.
+                _totalSupply -= value;
+            }
+        } else {
+            unchecked {
+                // Overflow not possible: balance + value is at most totalSupply, which we know fits into a uint256.
+                _balances[to] += value;
+            }
+        }
+
+        emit Transfer(from, to, value);
     }
 
-        return true;
+    function _mint(address account, uint256 value) internal {
+        if (account == address(0)) {
+            revert ERC20InvalidReceiver(address(0));
+        }
+        _update(address(0), account, value);
     }
 
-    function _transfer(
-        address sender,
-        address recipient,
-        uint256 amount
-    ) internal virtual {
-        require(sender != address(0), "ERC20: transfer from the zero address");
-        require(recipient != address(0), "ERC20: transfer to the zero address");
-
-        _beforeTokenTransfer(sender, recipient, amount);
-
-        uint256 senderBalance = _balances[sender];
-        require(senderBalance >= amount, "ERC20: transfer amount exceeds balance");
-    unchecked {
-        _balances[sender] = senderBalance - amount;
-    }
-        _balances[recipient] += amount;
-
-        emit Transfer(sender, recipient, amount);
+    function _burn(address account, uint256 value) internal {
+        if (account == address(0)) {
+            revert ERC20InvalidSender(address(0));
+        }
+        _update(account, address(0), value);
     }
 
-    function _mint(address account, uint256 amount) internal virtual {
-        require(account != address(0), "ERC20: mint to the zero address");
-
-        _beforeTokenTransfer(address(0), account, amount);
-
-        _totalSupply += amount;
-        _balances[account] += amount;
-        emit Transfer(address(0), account, amount);
+    function _approve(address owner, address spender, uint256 value) internal {
+        _approve(owner, spender, value, true);
     }
 
-    function _burn(address account, uint256 amount) internal virtual {
-        require(account != address(0), "ERC20: burn from the zero address");
-
-        _beforeTokenTransfer(account, address(0), amount);
-
-        uint256 accountBalance = _balances[account];
-        require(accountBalance >= amount, "ERC20: burn amount exceeds balance");
-    unchecked {
-        _balances[account] = accountBalance - amount;
-    }
-        _totalSupply -= amount;
-
-        emit Transfer(account, address(0), amount);
+    function _approve(address owner, address spender, uint256 value, bool emitEvent) internal virtual {
+        if (owner == address(0)) {
+            revert ERC20InvalidApprover(address(0));
+        }
+        if (spender == address(0)) {
+            revert ERC20InvalidSpender(address(0));
+        }
+        _allowances[owner][spender] = value;
+        if (emitEvent) {
+            emit Approval(owner, spender, value);
+        }
     }
 
-    function _approve(
-        address owner,
-        address spender,
-        uint256 amount
-    ) internal virtual {
-        require(owner != address(0), "ERC20: approve from the zero address");
-        require(spender != address(0), "ERC20: approve to the zero address");
-
-        _allowances[owner][spender] = amount;
-        emit Approval(owner, spender, amount);
+    function _spendAllowance(address owner, address spender, uint256 value) internal virtual {
+        uint256 currentAllowance = allowance(owner, spender);
+        if (currentAllowance != type(uint256).max) {
+            if (currentAllowance < value) {
+                revert ERC20InsufficientAllowance(spender, currentAllowance, value);
+            }
+            unchecked {
+                _approve(owner, spender, currentAllowance - value, false);
+            }
+        }
     }
-
-    function _beforeTokenTransfer(
-        address from,
-        address to,
-        uint256 amount
-    ) internal virtual {}
 }
 
 abstract contract ERC20Burnable is Context, ERC20, Ownable {
@@ -234,6 +287,9 @@ abstract contract ERC20Lockable is ERC20, Ownable {
     event Lock(address indexed from, uint256 amount, uint256 releaseTime);
     event Unlock(address indexed from, uint256 amount);
 
+    /**
+     * Modifier to check whether there is sufficient balance by checking the amount locked at the address.
+     */
     modifier checkLock(address from, uint256 amount) {
         uint256 length = _locks[from].length;
         if (length > 0) {
@@ -243,6 +299,9 @@ abstract contract ERC20Lockable is ERC20, Ownable {
         _;
     }
 
+    /**
+     * funcion lock.
+     */
     function _lock(address from, uint256 amount, uint256 releaseTime) checkLock(from, amount) internal returns (bool success)
     {
         require(
@@ -255,6 +314,9 @@ abstract contract ERC20Lockable is ERC20, Ownable {
         success = true;
     }
 
+    /**
+     * funcion unlock.
+     */
     function _unlock(address from, uint256 index) internal returns (bool success) {
         LockInfo storage info = _locks[from][index];
         _totalLocked[from] = _totalLocked[from] - info._amount;
@@ -264,6 +326,9 @@ abstract contract ERC20Lockable is ERC20, Ownable {
         success = true;
     }
 
+    /**
+     * Specify lock amount until specified release time.
+     */
     function lock(address recipient, uint256 amount, uint256 releaseTime) public onlyOwner returns (bool success) {
         require(_balances[recipient] >= amount, "There is not enough balance of holder.");
         _lock(recipient, amount, releaseTime);
@@ -271,6 +336,9 @@ abstract contract ERC20Lockable is ERC20, Ownable {
         success = true;
     }
 
+    /**
+     * Unlock the lock past the release time.
+     */
     function autoUnlock(address from) public returns (bool success) {
         for (uint256 i = 0; i < _locks[from].length; i++) {
             if (_locks[from][i]._releaseTime < block.timestamp) {
@@ -280,12 +348,18 @@ abstract contract ERC20Lockable is ERC20, Ownable {
         success = true;
     }
 
+    /**
+     * Unlock the specific lock of the address.
+     */
     function unlock(address from, uint256 idx) public onlyOwner returns (bool success) {
         require(_locks[from].length > idx, "There is not lock info.");
         _unlock(from, idx);
         success = true;
     }
 
+    /**
+     * Unlock all locks in address.
+     */
     function releaseLock(address from) external onlyOwner returns (bool success){
         require(_locks[from].length > 0, "There is not lock info.");
         for (uint256 i = _locks[from].length; i > 0; i--) {
@@ -294,6 +368,9 @@ abstract contract ERC20Lockable is ERC20, Ownable {
         success = true;
     }
 
+    /**
+     * After transfer, lock the amount until a specific release time.
+     */
     function transferWithLock(address recipient, uint256 amount, uint256 releaseTime) external onlyOwner returns (bool success)
     {
         require(recipient != address(0));
@@ -302,6 +379,9 @@ abstract contract ERC20Lockable is ERC20, Ownable {
         success = true;
     }
 
+    /**
+     * Check lock information.
+     */
     function lockInfo(address locked, uint256 index) public view returns (uint256 releaseTime, uint256 amount)
     {
         LockInfo memory info = _locks[locked][index];
@@ -309,35 +389,161 @@ abstract contract ERC20Lockable is ERC20, Ownable {
         amount = info._amount;
     }
 
+    /**
+     * Check the total lock amount and count of address.
+     */
     function totalLocked(address locked) public view returns (uint256 amount, uint256 length){
         amount = _totalLocked[locked];
         length = _locks[locked].length;
     }
 }
 
-contract MRT is ERC20, ERC20Burnable, ERC20Lockable {
+contract Pausable is Ownable {
+    event Pause();
+    event Unpause();
+    event PauserChanged(address indexed newAddress);
 
-    constructor() ERC20("MERET", "MRT") {
-        _mint(msg.sender, 3000000000 * (10 ** decimals()));
+    address public pauser;
+    bool public paused = false;
+
+    /**
+     * Modifier to make a function callable only when the contract is not paused.
+     */
+    modifier whenNotPaused() {
+        require(!paused, "Pausable: paused");
+        _;
     }
 
-    function transfer(address to, uint256 amount) public checkLock(msg.sender, amount) override returns (bool) {
+    /**
+     * throws if called by any account other than the pauser
+     */
+    modifier onlyPauser() {
+        require(msg.sender == pauser, "Pausable: caller is not the pauser");
+        _;
+    }
+
+    /**
+     * called by the owner to pause, triggers stopped state
+     */
+    function pause() external onlyPauser {
+        paused = true;
+        emit Pause();
+    }
+
+    /**
+     * called by the owner to unpause, returns to normal state
+     */
+    function unpause() external onlyPauser {
+        paused = false;
+        emit Unpause();
+    }
+
+    /**
+     * Updates the pauser address.
+     * _newPauser The address of the new pauser.
+     */
+    function updatePauser(address _newPauser) external onlyOwner {
+        require(
+            _newPauser != address(0),
+            "Pausable: new pauser is the zero address"
+        );
+        pauser = _newPauser;
+        emit PauserChanged(pauser);
+    }
+}
+
+abstract contract ERC20Capped is ERC20 {
+    uint256 private _cap;
+
+    /**
+     * @dev Total supply cap has been exceeded.
+     */
+    error ERC20ExceededCap(uint256 increasedSupply, uint256 cap);
+
+    /**
+     * @dev The supplied cap is not a valid cap.
+     */
+    error ERC20InvalidCap(uint256 cap);
+
+    /**
+     * @dev Sets the value of the `cap`.
+     */
+    constructor(uint256 cap_) {
+        if (cap_ == 0) {
+            revert ERC20InvalidCap(0);
+        }
+        _cap = cap_;
+    }
+
+    /**
+     * @dev Returns the cap on the token's total supply.
+     */
+    function cap() public view virtual returns (uint256) {
+        return _cap;
+    }
+
+    /**
+     * @dev See {ERC20-_update}.
+     */
+    function _update(address from, address to, uint256 value) internal virtual override {
+        super._update(from, to, value);
+
+        if (from == address(0)) {
+            uint256 maxSupply = cap();
+            uint256 supply = totalSupply();
+            if (supply > maxSupply) {
+                revert ERC20ExceededCap(supply, maxSupply);
+            }
+        }
+        if (to == address(0)) {
+            unchecked {
+            // Overflow not possible: value <= totalSupply or value <= fromBalance <= totalSupply.
+                _cap -= value;
+            }
+        }
+    }
+}
+
+contract MRT is ERC20, ERC20Burnable, ERC20Lockable, Pausable, ERC20Capped {
+
+    constructor() ERC20("MRT", "MRT") ERC20Capped(3_000_000_000 * (10 ** decimals())) {
+    }
+
+    function transfer(address to, uint256 amount) public checkLock(msg.sender, amount) whenNotPaused() override returns (bool) {
         return super.transfer(to, amount);
     }
 
-    function transferFrom(address from, address to, uint256 amount) public checkLock(from, amount) override returns (bool) {
+    // To transfer tokens to the provided list of address with respective amount
+    function batchTransfer(address[] calldata toAddresses, uint256[] calldata amounts) public 
+    {
+        require(toAddresses.length == amounts.length, "Invalid input parameters");
+
+        for(uint256 indx = 0; indx < toAddresses.length; indx++) {
+            require(transfer(toAddresses[indx], amounts[indx]), "Unable to transfer token to the account");
+        }
+    }
+
+    function transferFrom(address from, address to, uint256 amount) public checkLock(from, amount) whenNotPaused() override returns (bool) {
         return super.transferFrom(from, to, amount);
     }
 
-    function burn(uint256 amount) public checkLock(msg.sender, amount) override {
+    function mint(address account, uint256 amount) public onlyOwner {
+        _mint(account, amount);
+    }
+    
+    function burn(uint256 amount) public checkLock(msg.sender, amount) whenNotPaused() override {
         return super.burn(amount);
     }
 
-    function burnFrom(address account, uint256 amount) public checkLock(account, amount) override {
+    function burnFrom(address account, uint256 amount) public checkLock(account, amount) whenNotPaused() override {
         return super.burnFrom(account, amount);
     }
 
     function balanceOf(address holder) public view override returns (uint256 balance) {
+        balance = super.balanceOf(holder);
+    }
+
+    function getAvailableBalance(address holder) public view returns (uint256 balance) {
         uint256 totalBalance = super.balanceOf(holder);
         uint256 availableBalance = 0;
         (uint256 lockedBalance, uint256 lockedLength) = totalLocked(holder);
@@ -355,11 +561,13 @@ contract MRT is ERC20, ERC20Burnable, ERC20Lockable {
         balance = totalBalance - lockedBalance + availableBalance;
     }
 
-    function balanceOfTotal(address holder) public view returns (uint256 balance) {
-        balance = super.balanceOf(holder);
+    function getLockAmount(address holder) public view returns (uint256 balance) {
+        (uint256 lockedBalance, ) = totalLocked(holder);
+        balance = lockedBalance;
     }
 
-    function _beforeTokenTransfer(address from, address to, uint256 amount) internal override {
-        super._beforeTokenTransfer(from, to, amount);
+    function _update(address from, address to, uint256 value) internal override(ERC20, ERC20Capped)
+    {
+        super._update(from, to, value);
     }
 }
