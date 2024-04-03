@@ -506,7 +506,7 @@ abstract contract ERC20Capped is ERC20 {
 
 contract MRT is ERC20, ERC20Burnable, ERC20Lockable, Pausable, ERC20Capped {
 
-    constructor() ERC20("MRT", "MRT") ERC20Capped(3_000_000_000 * (10 ** decimals())) {
+    constructor() ERC20("MERET", "MRT") ERC20Capped(3_000_000_000 * (10 ** decimals())) {
     }
 
     function transfer(address to, uint256 amount) public checkLock(msg.sender, amount) whenNotPaused() override returns (bool) {
